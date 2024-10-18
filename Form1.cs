@@ -7,11 +7,10 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.IO;
 using Microsoft.Win32;
-using System.Drawing;
-using static System.Windows.Forms.VisualStyles.VisualStyleElement.Button;
 using System.Linq;
 using System.Collections.Generic;
-
+using System.Net.Http;
+using Newtonsoft.Json.Linq;
 
 namespace cfnat.win.gui
 {
@@ -22,6 +21,10 @@ namespace cfnat.win.gui
         private bool isExitingDueToDisclaimer = false;
         private List<Process> cmdProcesses = new List<Process>(); // 用来保存所有启动的cmd进程
         int 执行开关 = 0;
+        int 心跳 = 0;
+        string 版本号;
+        string 标题;
+        private DateTime 运行时间;
         public Form1()
         {
             InitializeComponent();
@@ -40,7 +43,9 @@ namespace cfnat.win.gui
             this.MaximizeBox = false;
             this.MinimizeBox = true; // 保留最小化功能
             FileVersionInfo myFileVersionInfo = FileVersionInfo.GetVersionInfo(System.Reflection.Assembly.GetExecutingAssembly().Location);
-            this.Text = "CFnat Windows GUI v" + myFileVersionInfo.FileVersion + " TG:CMLiussss BY:CM喂饭 干货满满";
+            版本号 = "v" + myFileVersionInfo.FileVersion;
+            标题 = "CFnat Windows GUI " + 版本号;
+            this.Text = 标题 + " TG:CMLiussss BY:CM喂饭 干货满满";
             // 初始化 NotifyIcon（系统托盘图标）
             notifyIcon = new NotifyIcon();
             notifyIcon.Icon = this.Icon;
@@ -85,12 +90,42 @@ namespace cfnat.win.gui
         // 当点击系统托盘菜单中的"退出"选项时触发
         private void NotifyIcon_Exit(object sender, EventArgs e)
         {
-            if (button1.Text == "停止")
+            try
             {
-                button1_Click(sender, e);
+                // 强制结束所有相关进程
+                foreach (var process in Process.GetProcesses())
+                {
+                    try
+                    {
+                        // 查找所有cfnat和colo相关进程
+                        if (process.ProcessName.ToLower().Contains("cfnat") ||
+                            process.ProcessName.ToLower().Contains("colo"))
+                        {
+                            process.Kill(); // 强制终止进程
+                            process.WaitForExit(1000); // 等待最多1秒确保进程终止
+                        }
+                    }
+                    catch
+                    {
+                        // 忽略单个进程终止失败的错误，继续处理其他进程
+                    }
+                }
+
+                // 清理托盘图标
+                if (notifyIcon != null)
+                {
+                    notifyIcon.Visible = false;
+                    notifyIcon.Dispose();
+                }
+
+                // 强制退出应用程序
+                Environment.Exit(0);
             }
-                //notifyIcon.Visible = false;
-                Application.Exit();
+            catch (Exception ex)
+            {
+                // 如果出现任何错误，使用最强制的方式退出
+                Environment.Exit(1);
+            }
         }
 
         // 修改 Form1_FormClosing 方法
@@ -117,9 +152,12 @@ namespace cfnat.win.gui
             if (button1.Text == "启动")
             {
                 执行开关 = 1;
+                运行时间 = DateTime.Now; // 获取当前时间
+                groupBox2.Text = "实时日志  运行时长 00:00:00";
                 checkBox4.Checked = true;
                 outputTextBox.Clear();
                 button1.Text = "停止";
+                button4.Enabled = false;
                 groupBox3.Enabled = false;
                 textBox1.Enabled = false;
                 textBox2.Enabled = false;
@@ -136,7 +174,7 @@ namespace cfnat.win.gui
                 string 目标端口 = textBox6.Text;
                 string 随机IP = "true";
                 string tls = "true";
-                if (checkBox2.Checked == false)  随机IP = "false";
+                if (checkBox2.Checked == false) 随机IP = "false";
                 string tls描述 = "TLS";
                 if (checkBox3.Checked == false)
                 {
@@ -149,17 +187,22 @@ namespace cfnat.win.gui
                 string 检查的域名地址 = textBox10.Text;
 
                 string 数据中心描述 = 数据中心;
-                if (数据中心描述.Length > 11) 数据中心描述 = 数据中心.Substring(0,3) + "...";
+                if (数据中心描述.Length > 11) 数据中心描述 = 数据中心.Substring(0, 3) + "...";
                 notifyIcon.Icon = Properties.Resources.going;
                 string 状态栏描述 = $"CFnat: 运行中\nC: {数据中心描述}\nD: {有效延迟}ms\nP: {服务端口}\nIPv{IP类型} {目标端口} {tls描述}";
                 if (状态栏描述.Length > 63) 状态栏描述 = 状态栏描述.Substring(0, 60) + "...";
                 notifyIcon.Text = 状态栏描述;
                 // 保存到 cfnat.ini
                 SaveToIni(系统, 架构, 数据中心, 有效延迟, 服务端口, 开机启动, IP类型, 目标端口, tls, 随机IP, 有效IP, 负载IP, 并发请求, 检查的域名地址);
-                if (button4.Enabled == true)
+
+                // 获取当前程序的目录
+                string currentDirectory = AppDomain.CurrentDomain.BaseDirectory;
+                string coloFolder = Path.Combine(currentDirectory, "colo");
+                string coloExe = Path.Combine(coloFolder, $"colo-{系统}-{架构}.exe");
+                if (File.Exists(coloExe))
                 {
                     log($"生成 IPv{IP类型}缓存 IP库");
-                    await RunCommandAsync($"colo-windows-{架构}.exe -ips={IP类型} -random={随机IP}  -task={并发请求}", "colo");
+                    await RunCommandAsync($"colo-{系统}-{架构}.exe -ips={IP类型} -random={随机IP}  -task={并发请求}", "colo");
                     if (执行开关 != 0)
                     {
                         string[] 数据中心数组 = textBox1.Text.Split(',');
@@ -207,17 +250,27 @@ namespace cfnat.win.gui
                         }
                     }
                 }
-                await RunCommandAsync($"cfnat-{系统}-{架构}.exe -colo={数据中心} -delay={有效延迟} -addr=\"0.0.0.0:{服务端口}\" -ips={IP类型} -port={目标端口} -tls={tls} -random={随机IP} -ipnum={有效IP} -num={负载IP} -task={并发请求} -domain=\"{检查的域名地址}\"");
+                if (File.Exists($"cfnat-{系统}-{架构}.exe"))
+                {
+                    await RunCommandAsync($"cfnat-{系统}-{架构}.exe -colo={数据中心} -delay={有效延迟} -addr=\"0.0.0.0:{服务端口}\" -ips={IP类型} -port={目标端口} -tls={tls} -random={随机IP} -ipnum={有效IP} -num={负载IP} -task={并发请求} -domain=\"{检查的域名地址}\"");
+                }
+                else
+                {
+                    MessageBox.Show($"cfnat-{系统}-{架构}.exe 核心文件缺失！");
+                    button1_Click(sender, e);
+                }
             }
             else
             {
                 执行开关 = 0;
+                groupBox2.Text = "实时日志";
                 checkBox4.Checked = false;
                 notifyIcon.Icon = this.Icon;
                 notifyIcon.Text = "CFnat: 未运行";
                 await StopCommandAsync();
                 await StopCommandAsync();
                 button1.Text = "启动";
+                button4.Enabled = true;
                 groupBox3.Enabled = true;
                 textBox1.Enabled = true;
                 textBox2.Enabled = true;
@@ -227,7 +280,9 @@ namespace cfnat.win.gui
 
         private async Task RunCommandAsync(string command, string workingDirectory = "")
         {
-            if (执行开关 != 0) {
+            Console.WriteLine("执行" + workingDirectory + "/" + command);
+            if (执行开关 != 0)
+            {
                 progressBar1.Value = 0;
                 comboBox1.Enabled = false;
                 comboBox2.Enabled = false;
@@ -268,7 +323,7 @@ namespace cfnat.win.gui
                                             if (double.TryParse(percentageString, out double percentage))
                                             {
                                                 int newValue = (int)percentage;
-                                                if (newValue > progressBar1.Value)  progressBar1.Value = newValue;
+                                                if (newValue > progressBar1.Value) progressBar1.Value = newValue;
                                             }
                                             break;
                                         }
@@ -310,6 +365,7 @@ namespace cfnat.win.gui
                 comboBox1.Enabled = true;
                 comboBox2.Enabled = true;
             }
+            //执行开关 = 0;
         }
 
         private async Task StopCommandAsync()
@@ -374,7 +430,7 @@ namespace cfnat.win.gui
                 comboBox2.Items.Add("arm");
                 comboBox2.Items.Add("arm64");
                 comboBox2.Text = "amd64";
-                this.Height = 492; 
+                // this.Height = 492; 
             }
             else
             {
@@ -384,9 +440,8 @@ namespace cfnat.win.gui
                 comboBox2.Items.Add("386");
                 comboBox2.Items.Add("amd64");
                 comboBox2.Text = "amd64";
-                this.Height = 522;
+                //this.Height = 522;
             }
-            进度条坐标修正();
         }
         private void textBox1_Leave(object sender, EventArgs e)
         {
@@ -507,7 +562,7 @@ namespace cfnat.win.gui
             }
         }
         //SaveToIni(系统, 架构, 数据中心, 有效延迟, 服务端口, 开机启动);
-        private void SaveToIni(string 系统, string 架构, string 数据中心, string 有效延迟, string 服务端口, string 开机启动, string IP类型, string 目标端口, string tls, string  随机IP, string 有效IP, string 负载IP, string 并发请求, string 检查的域名地址)
+        private void SaveToIni(string 系统, string 架构, string 数据中心, string 有效延迟, string 服务端口, string 开机启动, string IP类型, string 目标端口, string tls, string 随机IP, string 有效IP, string 负载IP, string 并发请求, string 检查的域名地址)
         {
             using (StreamWriter writer = new StreamWriter("cfnat.ini"))
             {
@@ -568,7 +623,7 @@ namespace cfnat.win.gui
                                         textBox5.Text = value;
                                         break;
                                     case "on":
-                                        if(value.ToLower() == "true") checkBox1.Checked = true;
+                                        if (value.ToLower() == "true") checkBox1.Checked = true;
                                         else checkBox1.Checked = false;
                                         break;
                                     case "ips":
@@ -626,7 +681,7 @@ namespace cfnat.win.gui
                 {
                     // 退出程序
                     Environment.Exit(0); // 立即退出程序
-                } 
+                }
                 else
                 {
                     var version = Environment.OSVersion.Version;
@@ -687,7 +742,7 @@ namespace cfnat.win.gui
             }
         }
 
-            private void AddToStartup()
+        private void AddToStartup()
         {
             // 获取当前程序的路径
             string programName = "CFnat Windows GUI"; // 这里替换为你的程序名称
@@ -718,7 +773,7 @@ namespace cfnat.win.gui
             }
         }
 
-        private void timer1_Tick(object sender, EventArgs e)
+        private async void timer1_Tick(object sender, EventArgs e)
         {
             timer1.Enabled = false;
             Check_COLO(sender, e);
@@ -728,25 +783,68 @@ namespace cfnat.win.gui
                 button1_Click(sender, e);
             }
             this.Height = 492;
-            进度条坐标修正();
+            await CheckGitHubVersionAsync();
+        }
+
+        private async Task CheckGitHubVersionAsync()
+        {
+            try
+            {
+                // 首先检查是否有网络连接
+                if (!IsNetworkAvailable())
+                {
+                    return; // 静默返回，不显示错误
+                }
+
+                using (HttpClient client = new HttpClient())
+                {
+                    try
+                    {
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("request");
+                        client.Timeout = TimeSpan.FromSeconds(5); // 设置5秒超时
+
+                        string url = "https://api.github.com/repos/cmliu/CFnat-Windows-GUI/releases/latest";
+                        HttpResponseMessage response = await client.GetAsync(url);
+
+                        if (response.IsSuccessStatusCode)
+                        {
+                            string responseBody = await response.Content.ReadAsStringAsync();
+                            JObject json = JObject.Parse(responseBody);
+                            string latestVersion = json["tag_name"].ToString();
+
+                            if (latestVersion != 版本号)
+                            {
+                                标题 = "CFnat Windows GUI " + 版本号 + $"  发现新版本: {latestVersion} 请及时更新！";
+                                this.Text = 标题;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // 静默处理所有异常（网络错误、超时、JSON解析错误等）
+                        return;
+                    }
+                }
+            }
+            catch
+            {
+                // 静默处理任何其他异常
+                return;
+            }
         }
 
         private void button3_Click(object sender, EventArgs e)
         {
-            if (button3.Text== "高级设置∨") {
-                groupBox3.Visible = true; 
+            if (button3.Text == "高级设置∨")
+            {
+                groupBox3.Visible = true;
                 button3.Text = "高级设置∧";
-                //this.Height = 492;
-                this.Height += 83;
-                进度条坐标修正();
+                this.Height -= 83;
             }
             else
             {
                 groupBox3.Visible = false;
                 button3.Text = "高级设置∨";
-                //this.Height = 575;
-                this.Height -= 83;
-                进度条坐标修正();
             }
         }
 
@@ -771,8 +869,14 @@ namespace cfnat.win.gui
 
         private void timer2_Tick(object sender, EventArgs e)
         {
-            if(outputTextBox.Text.Length > 1047483647) {
-                button2_Click(sender, e);
+            心跳 += 1;
+            if (outputTextBox.Text.Length > 1047483647)  button2_Click(sender, e);
+            if(心跳 % 60 == 0 && button5.Enabled == false) Check_COLO(sender, e);
+
+            if (执行开关 == 1) {
+                DateTime 当前时间 = DateTime.Now;
+                TimeSpan 已运行时间 = 当前时间 - 运行时间; // 计算时间差
+                groupBox2.Text = $"实时日志  运行时长 {Math.Floor(已运行时间.TotalHours).ToString("00")}:{已运行时间.Minutes.ToString("00")}:{已运行时间.Seconds.ToString("00")}";
             }
         }
 
@@ -786,11 +890,6 @@ namespace cfnat.win.gui
             checkBox4.Checked = true;
         }
 
-        private void 进度条坐标修正() {
-            Console.WriteLine("目前进度条坐标:" + progressBar1.Location + "当前窗口坐标" + this.Size.ToString());
-            progressBar1.Location = new Point(13, this.Size.Height-70);
-        }
-
         private void Check_COLO(object sender, EventArgs e)
         {
             // 获取当前程序的目录
@@ -800,18 +899,25 @@ namespace cfnat.win.gui
             // 检查是否存在colo文件夹
             if (Directory.Exists(coloFolder))
             {
+                string 系统 = comboBox1.Text;
                 string 架构 = comboBox2.Text;
                 // 定义要检查的文件路径
-                string coloExe = Path.Combine(coloFolder, $"colo-windows-{架构}.exe");
+                string coloExe = Path.Combine(coloFolder, $"colo-{系统}-{架构}.exe");
                 string ipsV4 = Path.Combine(coloFolder, "ips-v4.txt");
                 string ipsV6 = Path.Combine(coloFolder, "ips-v6.txt");
                 string locationsJson = Path.Combine(coloFolder, "locations.json");
-
+                string ipCsv = Path.Combine(coloFolder, "ip.csv");
+                if (File.Exists(ipCsv)) 
+                {
+                    button5.Enabled = true;
+                    button5.Visible = true;
+                }
+                
                 // 检查是否存在所需的4个文件
                 if (File.Exists(coloExe) && File.Exists(ipsV4) && File.Exists(ipsV6) && File.Exists(locationsJson))
                 {
                     button4.Enabled = true;
-                    //log($"colo-windows-{架构}.exe 准备就绪！");
+                    //log($"colo-{系统}-{架构}.exe 准备就绪！");
                     //MessageBox.Show("所有文件均存在！");
                 }
                 else
@@ -819,7 +925,7 @@ namespace cfnat.win.gui
                     button4.Enabled = false;
                     // 具体提示哪个文件不存在
                     string missingFiles = "";
-                    if (!File.Exists(coloExe)) missingFiles += $"colo-windows-{架构}.exe";
+                    if (!File.Exists(coloExe)) missingFiles += $"colo-{系统}-{架构}.exe";
                     if (!File.Exists(ipsV4)) missingFiles += "ips-v4.txt ";
                     if (!File.Exists(ipsV6)) missingFiles += "ips-v6.txt ";
                     if (!File.Exists(locationsJson)) missingFiles += "locations.json ";
@@ -837,15 +943,18 @@ namespace cfnat.win.gui
 
         private void log(string text)
         {
-            outputTextBox.AppendText(text+"\r\n");
+            outputTextBox.AppendText(text + "\r\n");
         }
 
         private async void button4_Click(object sender, EventArgs e)
         {
-            if (button4.Text == "缓存IP库") { 
-                button4.Text= "停止";
+            if (button4.Text == "缓存IP库")
+            {
+                执行开关 = 1;
+                button4.Text = "停止";
                 button1.Enabled = false;
                 log("执行colo生成缓存IP库");
+                string 系统 = comboBox1.Text;
                 string 架构 = comboBox2.Text;
                 string IP类型 = "4";
                 if (comboBox3.Text == "IPv6") IP类型 = "6";
@@ -853,7 +962,7 @@ namespace cfnat.win.gui
                 if (checkBox2.Checked == false) 随机IP = "false";
                 string 并发请求 = textBox9.Text;
                 log($"生成 {textBox1.Text}缓存 IP库");
-                await RunCommandAsync($"colo-windows-{架构}.exe -ips={IP类型} -random={随机IP}  -task={并发请求}","colo");
+                await RunCommandAsync($"colo-{系统}-{架构}.exe -ips={IP类型} -random={随机IP}  -task={并发请求}", "colo");
                 string[] 数据中心数组 = textBox1.Text.Split(',');
 
                 // 检测 colo/ip.csv 文件是否存在
@@ -895,8 +1004,10 @@ namespace cfnat.win.gui
                     log("文件 colo/ip.csv 不存在。");
                 }
                 button4.Text = "缓存IP库";
+                button1.Enabled = true;
             }
-            else {
+            else
+            {
                 button4.Text = "缓存IP库";
                 button1.Enabled = true;
                 log("停止colo生成缓存IP库");
@@ -906,13 +1017,51 @@ namespace cfnat.win.gui
 
         private void label1_MouseDoubleClick(object sender, MouseEventArgs e)
         {
-            if (progressBar1.Visible == false)
+            if (groupBox1.Text == "参数设置")
             {
-                progressBar1.Visible = true;
-            } else
+                groupBox1.Text = "参数设置 调试模式";
+                checkBox4.Visible = true;
+                button4.Visible = true;
+                this.AutoSizeMode = AutoSizeMode.GrowOnly;
+            }
+            else
             {
-                progressBar1.Visible = false;
+                groupBox1.Text = "参数设置";
+                checkBox4.Visible = false;
+                button4.Visible = false;
+                this.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             }
         }
+
+        private ipCsv ipCsvForm;
+
+        private void button5_Click(object sender, EventArgs e)
+        {
+            // 如果窗体还没有被实例化，或者已经被关闭，则重新实例化
+            if (ipCsvForm == null || ipCsvForm.IsDisposed)
+            {
+                ipCsvForm = new ipCsv();
+                ipCsvForm.Show();
+            }
+            else
+            {
+                // 如果窗体已经打开，则使其前置
+                ipCsvForm.BringToFront();
+            }
+        }
+
+        // 添加检查网络连接的辅助方法
+        private bool IsNetworkAvailable()
+        {
+            try
+            {
+                return NetworkInterface.GetIsNetworkAvailable();
+            }
+            catch
+            {
+                return false; // 如果无法检查网络状态，假设网络不可用
+            }
+        }
+
     }
 }
